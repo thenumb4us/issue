@@ -1,0 +1,11 @@
+.gradle/
+build/
+**/build/
+local.properties
+*.log
+.env
+.env.*
+*.db
+*.sqlite
+*.sqlite3
+issue-aapt2

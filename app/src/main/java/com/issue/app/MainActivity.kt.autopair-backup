@@ -1,0 +1,1624 @@
+package com.issue.app
+
+import android.graphics.Color
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.InputType
+import android.view.Gravity
+import android.view.View
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.ScrollView
+import android.widget.TextView
+import android.widget.Toast
+import android.app.Activity
+import org.json.JSONArray
+import org.json.JSONObject
+
+class MainActivity : Activity() {
+
+    companion object {
+        private const val PREFS = "issue_prefs"
+
+        private const val KEY_ROLE = "role"
+        private const val KEY_PARENT_TOKEN = "parent_token"
+
+        private const val KEY_CHILD_ID = "child_id"
+        private const val KEY_DEVICE_ID = "device_id"
+        private const val KEY_PAIRING_ID = "pairing_id"
+        private const val KEY_PAIRING_CODE = "pairing_code"
+        private const val KEY_QR_TOKEN = "qr_token"
+    }
+
+    private val handler = Handler(Looper.getMainLooper())
+    private var pairingPolling = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        val role = prefs().getString(KEY_ROLE, null)
+
+        when (role) {
+            "parent" -> {
+                if (parentToken().isBlank()) {
+                    showParentLogin()
+                } else {
+                    loadParentDashboard()
+                }
+            }
+
+            "child" -> {
+                val pairingId = prefs()
+                    .getString(KEY_PAIRING_ID, null)
+
+                if (!pairingId.isNullOrBlank()) {
+                    showChildPairing()
+                } else {
+                    showChildSignup()
+                }
+            }
+
+            else -> showRoleSelection()
+        }
+    }
+
+    override fun onDestroy() {
+        pairingPolling = false
+        handler.removeCallbacksAndMessages(null)
+        super.onDestroy()
+    }
+
+    private fun showRoleSelection() {
+        pairingPolling = false
+
+        val root = base()
+
+        root.addView(title("ISSUE"))
+        root.addView(space(18))
+        root.addView(modeTitle("Welcome to ISSUE"))
+        root.addView(space(32))
+
+        root.addView(
+            primaryButton("Parent Mode") {
+                prefs()
+                    .edit()
+                    .putString(KEY_ROLE, "parent")
+                    .apply()
+
+                showParentLogin()
+            }
+        )
+
+        root.addView(space(14))
+
+        root.addView(
+            primaryButton("Child Mode") {
+                prefs()
+                    .edit()
+                    .putString(KEY_ROLE, "child")
+                    .apply()
+
+                showChildSignup()
+            }
+        )
+
+        setContentView(scroll(root))
+    }
+
+    private fun showParentLogin() {
+        pairingPolling = false
+
+        val root = base()
+
+        root.addView(title("ISSUE"))
+        root.addView(space(12))
+        root.addView(modeTitle("Parent Login"))
+        root.addView(space(24))
+
+        val email = field("Approved Gmail")
+        val password = field(
+            "ISSUE Password",
+            password = true
+        )
+
+        root.addView(email)
+        root.addView(space(12))
+        root.addView(password)
+        root.addView(space(22))
+
+        root.addView(
+            primaryButton("Login") {
+                val emailValue =
+                    email.text.toString().trim()
+
+                val passwordValue =
+                    password.text.toString()
+
+                if (
+                    emailValue.isBlank() ||
+                    passwordValue.isBlank()
+                ) {
+                    toast("Enter Gmail and password")
+                } else {
+                    parentLogin(
+                        emailValue,
+                        passwordValue
+                    )
+                }
+            }
+        )
+
+        root.addView(space(12))
+
+        root.addView(
+            secondaryButton("Use Recovery Code") {
+                showRecoveryLogin()
+            }
+        )
+
+        root.addView(space(12))
+
+        root.addView(
+            secondaryButton("Change Mode") {
+                clearRoleOnly()
+                showRoleSelection()
+            }
+        )
+
+        setContentView(scroll(root))
+    }
+
+    private fun parentLogin(
+        email: String,
+        password: String
+    ) {
+        showLoading("Signing in...")
+
+        background(
+            action = {
+                ApiClient.post(
+                    "/api/parent/auth/login",
+                    JSONObject().apply {
+                        put("email", email)
+                        put("password", password)
+                    }
+                )
+            },
+            success = { response ->
+                if (response.statusCode in 200..299) {
+                    val json = safeJson(response.body)
+
+                    val token = findString(
+                        json,
+                        "token",
+                        "accessToken",
+                        "access_token",
+                        "jwt"
+                    )
+
+                    if (token.isBlank()) {
+                        toast(
+                            "Login succeeded but token was missing"
+                        )
+                        showParentLogin()
+                        return@background
+                    }
+
+                    prefs()
+                        .edit()
+                        .putString(
+                            KEY_PARENT_TOKEN,
+                            token
+                        )
+                        .apply()
+
+                    loadParentDashboard()
+                } else {
+                    toast(
+                        apiMessage(
+                            response.body,
+                            "Login failed"
+                        )
+                    )
+                    showParentLogin()
+                }
+            },
+            failure = {
+                toast(
+                    "Connection error: " +
+                        (it.message ?: "Unknown")
+                )
+                showParentLogin()
+            }
+        )
+    }
+
+    private fun showRecoveryLogin() {
+        pairingPolling = false
+
+        val root = base()
+
+        root.addView(title("ISSUE"))
+        root.addView(space(12))
+        root.addView(modeTitle("Recovery Access"))
+        root.addView(space(22))
+
+        val email = field("Approved Gmail")
+        val code = field(
+            "Recovery Access Code",
+            password = true
+        )
+
+        root.addView(email)
+        root.addView(space(12))
+        root.addView(code)
+        root.addView(space(20))
+
+        root.addView(
+            primaryButton("Continue") {
+                val emailValue =
+                    email.text.toString().trim()
+
+                val codeValue =
+                    code.text.toString().trim()
+
+                if (
+                    emailValue.isBlank() ||
+                    codeValue.isBlank()
+                ) {
+                    toast(
+                        "Enter Gmail and recovery code"
+                    )
+                } else {
+                    recoveryLogin(
+                        emailValue,
+                        codeValue
+                    )
+                }
+            }
+        )
+
+        root.addView(space(12))
+
+        root.addView(
+            secondaryButton("Back") {
+                showParentLogin()
+            }
+        )
+
+        setContentView(scroll(root))
+    }
+
+    private fun recoveryLogin(
+        email: String,
+        code: String
+    ) {
+        showLoading("Checking recovery code...")
+
+        background(
+            action = {
+                ApiClient.post(
+                    "/api/parent/recovery/login",
+                    JSONObject().apply {
+                        put("email", email)
+                        put("code", code)
+                    }
+                )
+            },
+            success = { response ->
+                if (response.statusCode in 200..299) {
+                    val json = safeJson(response.body)
+
+                    val token = findString(
+                        json,
+                        "token",
+                        "accessToken",
+                        "access_token",
+                        "jwt"
+                    )
+
+                    if (token.isBlank()) {
+                        toast(
+                            "Recovery succeeded but token was missing"
+                        )
+                        showRecoveryLogin()
+                        return@background
+                    }
+
+                    prefs()
+                        .edit()
+                        .putString(
+                            KEY_PARENT_TOKEN,
+                            token
+                        )
+                        .apply()
+
+                    loadParentDashboard()
+                } else {
+                    toast(
+                        apiMessage(
+                            response.body,
+                            "Recovery login failed"
+                        )
+                    )
+                    showRecoveryLogin()
+                }
+            },
+            failure = {
+                toast(
+                    "Connection error: " +
+                        (it.message ?: "Unknown")
+                )
+                showRecoveryLogin()
+            }
+        )
+    }
+
+    private fun loadParentDashboard() {
+        pairingPolling = false
+
+        val token = parentToken()
+
+        if (token.isBlank()) {
+            showParentLogin()
+            return
+        }
+
+        showLoading("Loading dashboard...")
+
+        background(
+            action = {
+                ApiClient.get(
+                    "/api/parent/dashboard",
+                    token
+                )
+            },
+            success = { response ->
+                if (response.statusCode == 401) {
+                    clearParentSession()
+                    toast("Session expired")
+                    showParentLogin()
+                    return@background
+                }
+
+                if (response.statusCode !in 200..299) {
+                    showParentDashboard(
+                        null,
+                        apiMessage(
+                            response.body,
+                            "Dashboard unavailable"
+                        )
+                    )
+                    return@background
+                }
+
+                showParentDashboard(
+                    safeJson(response.body),
+                    null
+                )
+            },
+            failure = {
+                showParentDashboard(
+                    null,
+                    "Backend connection failed"
+                )
+            }
+        )
+    }
+
+    private fun showParentDashboard(
+        json: JSONObject?,
+        warning: String?
+    ) {
+        pairingPolling = false
+
+        val root = base()
+
+        root.addView(title("ISSUE"))
+        root.addView(space(10))
+        root.addView(modeTitle("Parent Dashboard"))
+        root.addView(space(20))
+
+        if (!warning.isNullOrBlank()) {
+            root.addView(warningText(warning))
+            root.addView(space(14))
+        }
+
+        val summary =
+            json?.optJSONObject("summary")
+                ?: json
+                    ?.optJSONObject("data")
+                    ?.optJSONObject("summary")
+
+        val totalChildren =
+            summary?.optInt(
+                "totalChildren",
+                -1
+            ) ?: -1
+
+        val onlineChildren =
+            summary?.optInt(
+                "onlineChildren",
+                summary.optInt(
+                    "online",
+                    -1
+                )
+            ) ?: -1
+
+        val criticalAlerts =
+            summary?.optInt(
+                "criticalAlerts",
+                summary.optInt(
+                    "alerts",
+                    -1
+                )
+            ) ?: -1
+
+        if (totalChildren >= 0) {
+            root.addView(
+                infoCard(
+                    "Children",
+                    totalChildren.toString()
+                )
+            )
+            root.addView(space(10))
+        }
+
+        if (onlineChildren >= 0) {
+            root.addView(
+                infoCard(
+                    "Online",
+                    onlineChildren.toString()
+                )
+            )
+            root.addView(space(10))
+        }
+
+        if (criticalAlerts >= 0) {
+            root.addView(
+                infoCard(
+                    "Critical Alerts",
+                    criticalAlerts.toString()
+                )
+            )
+            root.addView(space(18))
+        }
+
+        root.addView(
+            primaryButton("Children") {
+                loadChildren()
+            }
+        )
+
+        root.addView(space(10))
+
+        root.addView(
+            primaryButton("Pending Pairings") {
+                loadPendingPairings()
+            }
+        )
+
+        root.addView(space(10))
+
+        root.addView(
+            secondaryButton(
+                "Approve by 6-digit Code"
+            ) {
+                showPairingCodeLookup()
+            }
+        )
+
+        root.addView(space(10))
+
+        root.addView(
+            secondaryButton(
+                "Refresh Dashboard"
+            ) {
+                loadParentDashboard()
+            }
+        )
+
+        root.addView(space(10))
+
+        root.addView(
+            secondaryButton("Logout") {
+                clearParentSession()
+                showParentLogin()
+            }
+        )
+
+        root.addView(space(10))
+
+        root.addView(
+            secondaryButton("Change Mode") {
+                clearRoleOnly()
+                showRoleSelection()
+            }
+        )
+
+        setContentView(scroll(root))
+    }
+
+    private fun loadChildren() {
+        val token = parentToken()
+
+        showLoading("Loading children...")
+
+        background(
+            action = {
+                ApiClient.get(
+                    "/api/parent/children",
+                    token
+                )
+            },
+            success = { response ->
+                if (response.statusCode == 401) {
+                    clearParentSession()
+                    showParentLogin()
+                    return@background
+                }
+
+                if (response.statusCode !in 200..299) {
+                    toast(
+                        apiMessage(
+                            response.body,
+                            "Could not load children"
+                        )
+                    )
+                    loadParentDashboard()
+                    return@background
+                }
+
+                val json = safeJson(response.body)
+
+                showChildren(
+                    findArray(
+                        json,
+                        "children",
+                        "items",
+                        "data"
+                    )
+                )
+            },
+            failure = {
+                toast(
+                    "Connection error: " +
+                        (it.message ?: "Unknown")
+                )
+                loadParentDashboard()
+            }
+        )
+    }
+
+    private fun showChildren(
+        children: JSONArray?
+    ) {
+        val root = base()
+
+        root.addView(title("ISSUE"))
+        root.addView(space(10))
+        root.addView(modeTitle("Children"))
+        root.addView(space(20))
+
+        if (
+            children == null ||
+            children.length() == 0
+        ) {
+            root.addView(
+                text("No linked children yet.")
+            )
+        } else {
+            for (
+                index in 0 until children.length()
+            ) {
+                val child =
+                    children.optJSONObject(index)
+                        ?: continue
+
+                val name =
+                    findString(
+                        child,
+                        "fullName",
+                        "name",
+                        "username"
+                    ).ifBlank {
+                        "Child"
+                    }
+
+                val username =
+                    child.optString(
+                        "username",
+                        ""
+                    )
+
+                val status =
+                    findString(
+                        child,
+                        "status",
+                        "deviceStatus",
+                        "connectionStatus"
+                    )
+
+                val details = buildString {
+                    append(name)
+
+                    if (username.isNotBlank()) {
+                        append("\n@")
+                        append(username)
+                    }
+
+                    if (status.isNotBlank()) {
+                        append("\nStatus: ")
+                        append(status)
+                    }
+                }
+
+                root.addView(
+                    infoCard(
+                        "Child ${index + 1}",
+                        details
+                    )
+                )
+
+                root.addView(space(12))
+            }
+        }
+
+        root.addView(space(16))
+
+        root.addView(
+            secondaryButton("Back") {
+                loadParentDashboard()
+            }
+        )
+
+        setContentView(scroll(root))
+    }
+
+    private fun loadPendingPairings() {
+        val token = parentToken()
+
+        showLoading(
+            "Loading pending pairings..."
+        )
+
+        background(
+            action = {
+                ApiClient.get(
+                    "/api/parent/pairings",
+                    token
+                )
+            },
+            success = { response ->
+                if (response.statusCode == 401) {
+                    clearParentSession()
+                    showParentLogin()
+                    return@background
+                }
+
+                if (response.statusCode !in 200..299) {
+                    toast(
+                        apiMessage(
+                            response.body,
+                            "Could not load pairings"
+                        )
+                    )
+                    loadParentDashboard()
+                    return@background
+                }
+
+                val json = safeJson(response.body)
+
+                showPendingPairings(
+                    findArray(
+                        json,
+                        "pairings",
+                        "items",
+                        "data"
+                    )
+                )
+            },
+            failure = {
+                toast(
+                    "Connection error: " +
+                        (it.message ?: "Unknown")
+                )
+                loadParentDashboard()
+            }
+        )
+    }
+
+    private fun showPendingPairings(
+        pairings: JSONArray?
+    ) {
+        val root = base()
+
+        root.addView(title("ISSUE"))
+        root.addView(space(10))
+        root.addView(
+            modeTitle("Pending Pairings")
+        )
+        root.addView(space(18))
+
+        if (
+            pairings == null ||
+            pairings.length() == 0
+        ) {
+            root.addView(
+                text(
+                    "No pending pairing requests."
+                )
+            )
+        } else {
+            for (
+                index in 0 until pairings.length()
+            ) {
+                val pairing =
+                    pairings.optJSONObject(index)
+                        ?: continue
+
+                val pairingId =
+                    findString(
+                        pairing,
+                        "pairingId",
+                        "id"
+                    )
+
+                val pairingCode =
+                    findString(
+                        pairing,
+                        "pairingCode",
+                        "code"
+                    )
+
+                val childName =
+                    findString(
+                        pairing,
+                        "childName",
+                        "fullName",
+                        "username"
+                    ).ifBlank {
+                        "Child device"
+                    }
+
+                val deviceName =
+                    findString(
+                        pairing,
+                        "deviceName",
+                        "device"
+                    )
+
+                val status =
+                    findString(
+                        pairing,
+                        "status"
+                    )
+
+                val details = buildString {
+                    append(childName)
+
+                    if (deviceName.isNotBlank()) {
+                        append("\nDevice: ")
+                        append(deviceName)
+                    }
+
+                    if (pairingCode.isNotBlank()) {
+                        append("\nCode: ")
+                        append(pairingCode)
+                    }
+
+                    if (status.isNotBlank()) {
+                        append("\nStatus: ")
+                        append(status)
+                    }
+                }
+
+                root.addView(
+                    infoCard(
+                        "Pairing Request",
+                        details
+                    )
+                )
+
+                if (pairingId.isNotBlank()) {
+                    root.addView(space(8))
+
+                    root.addView(
+                        primaryButton("Approve") {
+                            approvePairing(
+                                pairingId
+                            )
+                        }
+                    )
+                }
+
+                root.addView(space(18))
+            }
+        }
+
+        root.addView(
+            secondaryButton("Refresh") {
+                loadPendingPairings()
+            }
+        )
+
+        root.addView(space(10))
+
+        root.addView(
+            secondaryButton("Back") {
+                loadParentDashboard()
+            }
+        )
+
+        setContentView(scroll(root))
+    }
+
+    private fun approvePairing(
+        pairingId: String
+    ) {
+        val token = parentToken()
+
+        showLoading("Approving child...")
+
+        background(
+            action = {
+                ApiClient.post(
+                    "/api/parent/pairing/" +
+                        pairingId +
+                        "/approve",
+                    JSONObject(),
+                    token
+                )
+            },
+            success = { response ->
+                if (response.statusCode in 200..299) {
+                    toast("Child approved ✔")
+                    loadPendingPairings()
+                } else {
+                    toast(
+                        apiMessage(
+                            response.body,
+                            "Approval failed"
+                        )
+                    )
+                    loadPendingPairings()
+                }
+            },
+            failure = {
+                toast(
+                    "Connection error: " +
+                        (it.message ?: "Unknown")
+                )
+                loadPendingPairings()
+            }
+        )
+    }
+
+    private fun showPairingCodeLookup() {
+        val root = base()
+
+        root.addView(title("ISSUE"))
+        root.addView(space(10))
+        root.addView(
+            modeTitle("Find Pairing")
+        )
+        root.addView(space(20))
+
+        val code =
+            field(
+                "6-digit pairing code",
+                numeric = true
+            )
+
+        root.addView(code)
+        root.addView(space(18))
+
+        root.addView(
+            primaryButton("Find") {
+                val value =
+                    code.text
+                        .toString()
+                        .trim()
+
+                if (value.length != 6) {
+                    toast(
+                        "Enter the 6-digit code"
+                    )
+                } else {
+                    findPairingByCode(value)
+                }
+            }
+        )
+
+        root.addView(space(10))
+
+        root.addView(
+            secondaryButton("Back") {
+                loadParentDashboard()
+            }
+        )
+
+        setContentView(scroll(root))
+    }
+
+    private fun findPairingByCode(
+        code: String
+    ) {
+        val token = parentToken()
+
+        showLoading("Finding pairing...")
+
+        background(
+            action = {
+                ApiClient.post(
+                    "/api/parent/pairing/find",
+                    JSONObject().apply {
+                        put("code", code)
+                    },
+                    token
+                )
+            },
+            success = { response ->
+                if (response.statusCode !in 200..299) {
+                    toast(
+                        apiMessage(
+                            response.body,
+                            "Pairing not found"
+                        )
+                    )
+                    showPairingCodeLookup()
+                    return@background
+                }
+
+                val json = safeJson(response.body)
+
+                val pairingId =
+                    findString(
+                        json,
+                        "pairingId",
+                        "id"
+                    )
+
+                if (pairingId.isBlank()) {
+                    toast(
+                        "Pairing ID missing"
+                    )
+                    showPairingCodeLookup()
+                } else {
+                    approvePairing(pairingId)
+                }
+            },
+            failure = {
+                toast(
+                    "Connection error: " +
+                        (it.message ?: "Unknown")
+                )
+                showPairingCodeLookup()
+            }
+        )
+    }
+
+    private fun showChildSignup() {
+        pairingPolling = false
+
+        val root = base()
+
+        root.addView(title("ISSUE"))
+        root.addView(space(10))
+        root.addView(modeTitle("Child Signup"))
+        root.addView(space(20))
+
+        val fullName =
+            field("Full Name")
+
+        val username =
+            field("Username")
+
+        val password =
+            field(
+                "Password",
+                password = true
+            )
+
+        val dob =
+            field(
+                "Date of Birth (YYYY-MM-DD)"
+            )
+
+        val deviceName =
+            field("Device Name")
+
+        root.addView(fullName)
+        root.addView(space(10))
+        root.addView(username)
+        root.addView(space(10))
+        root.addView(password)
+        root.addView(space(10))
+        root.addView(dob)
+        root.addView(space(10))
+        root.addView(deviceName)
+        root.addView(space(20))
+
+        root.addView(
+            primaryButton(
+                "Create Child Account"
+            ) {
+                val fullNameValue =
+                    fullName.text
+                        .toString()
+                        .trim()
+
+                val usernameValue =
+                    username.text
+                        .toString()
+                        .trim()
+
+                val passwordValue =
+                    password.text
+                        .toString()
+
+                val dobValue =
+                    dob.text
+                        .toString()
+                        .trim()
+
+                val deviceValue =
+                    deviceName.text
+                        .toString()
+                        .trim()
+
+                if (
+                    fullNameValue.isBlank() ||
+                    usernameValue.isBlank() ||
+                    passwordValue.isBlank() ||
+                    dobValue.isBlank() ||
+                    deviceValue.isBlank()
+                ) {
+                    toast(
+                        "Please complete all fields"
+                    )
+                } else {
+                    createChild(
+                        fullNameValue,
+                        usernameValue,
+                        passwordValue,
+                        dobValue,
+                        deviceValue
+                    )
+                }
+            }
+        )
+
+        root.addView(space(12))
+
+        root.addView(
+            secondaryButton("Change Mode") {
+                clearRoleOnly()
+                showRoleSelection()
+            }
+        )
+
+        setContentView(scroll(root))
+    }
+
+    private fun createChild(
+        fullName: String,
+        username: String,
+        password: String,
+        dob: String,
+        deviceName: String
+    ) {
+        showLoading(
+            "Creating child account..."
+        )
+
+        background(
+            action = {
+                ApiClient.post(
+                    "/api/child/signup",
+                    JSONObject().apply {
+                        put(
+                            "fullName",
+                            fullName
+                        )
+                        put(
+                            "username",
+                            username
+                        )
+                        put(
+                            "password",
+                            password
+                        )
+                        put(
+                            "dob",
+                            dob
+  
+                        )
+                        put("deviceName", deviceName)
+                    }
+                )
+            },
+            success = { response ->
+                if (response.statusCode !in 200..299) {
+                    toast(apiMessage(response.body, "Child signup failed"))
+                    showChildSignup()
+                    return@background
+                }
+
+                val json = safeJson(response.body)
+                val pairingId = findString(json, "pairingId", "id")
+
+                if (pairingId.isBlank()) {
+                    toast("Pairing information missing")
+                    showChildSignup()
+                    return@background
+                }
+
+                prefs().edit()
+                    .putString(KEY_CHILD_ID, findString(json, "childId"))
+                    .putString(KEY_DEVICE_ID, findString(json, "deviceId"))
+                    .putString(KEY_PAIRING_ID, pairingId)
+                    .putString(KEY_PAIRING_CODE, findString(json, "pairingCode", "code"))
+                    .putString(KEY_QR_TOKEN, findString(json, "qrToken", "qr"))
+                    .apply()
+
+                showChildPairing()
+            },
+            failure = {
+                toast("Connection error: ${it.message ?: "Unknown"}")
+                showChildSignup()
+            }
+        )
+    }
+
+    private fun showChildPairing() {
+        pairingPolling = false
+
+        val pairingId = prefs().getString(KEY_PAIRING_ID, "").orEmpty()
+        val code = prefs().getString(KEY_PAIRING_CODE, "").orEmpty()
+
+        if (pairingId.isBlank()) {
+            showChildSignup()
+            return
+        }
+
+        val root = base()
+        root.addView(title("ISSUE"))
+        root.addView(space(10))
+        root.addView(modeTitle("Parent Approval Required"))
+        root.addView(space(20))
+        root.addView(text("Ask your parent to approve this device."))
+
+        if (code.isNotBlank()) {
+            root.addView(space(20))
+            root.addView(bigCode(code))
+            root.addView(space(8))
+            root.addView(text("6-digit pairing code"))
+        }
+
+        root.addView(space(24))
+
+        root.addView(primaryButton("Check Approval") {
+            checkPairingStatus(pairingId, true)
+        })
+
+        root.addView(space(10))
+
+        root.addView(secondaryButton("Start Over") {
+            clearChildSession()
+            showChildSignup()
+        })
+
+        root.addView(space(10))
+
+        root.addView(secondaryButton("Change Mode") {
+            clearRoleOnly()
+            showRoleSelection()
+        })
+
+        setContentView(scroll(root))
+        startPairingPolling(pairingId)
+    }
+
+    private fun startPairingPolling(pairingId: String) {
+        pairingPolling = true
+
+        val task = object : Runnable {
+            override fun run() {
+                if (!pairingPolling) return
+
+                checkPairingStatus(pairingId, false)
+
+                if (pairingPolling) {
+                    handler.postDelayed(this, 5000L)
+                }
+            }
+        }
+
+        handler.postDelayed(task, 3000L)
+    }
+
+    private fun checkPairingStatus(
+        pairingId: String,
+        manual: Boolean
+    ) {
+        if (manual) toast("Checking approval...")
+
+        Thread {
+            try {
+                val response = ApiClient.get(
+                    "/api/child/pairing/$pairingId/status"
+                )
+
+                runOnUiThread {
+                    if (response.statusCode !in 200..299) {
+                        if (manual) {
+                            toast(
+                                apiMessage(
+                                    response.body,
+                                    "Could not check approval"
+                                )
+                            )
+                        }
+                        return@runOnUiThread
+                    }
+
+                    val json = safeJson(response.body)
+                    val status = findString(
+                        json,
+                        "status",
+                        "pairingStatus"
+                    ).lowercase()
+
+                    when (status) {
+                        "approved", "active", "paired" -> {
+                            pairingPolling = false
+                            showChildActive(json)
+                        }
+
+                        "rejected", "denied", "expired" -> {
+                            pairingPolling = false
+                            toast("Pairing status: $status")
+                            clearChildSession()
+                            showChildSignup()
+                        }
+
+                        else -> {
+                            if (manual) {
+                                toast("Waiting for parent approval")
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                if (manual) {
+                    runOnUiThread {
+                        toast("Connection error: ${e.message ?: "Unknown"}")
+                    }
+                }
+            }
+        }.start()
+    }
+
+    private fun showChildActive(json: JSONObject?) {
+        pairingPolling = false
+
+        val root = base()
+        root.addView(title("ISSUE"))
+        root.addView(space(10))
+        root.addView(modeTitle("Child Device Active"))
+        root.addView(space(24))
+        root.addView(successText("Parent approval completed ✔"))
+        root.addView(space(16))
+        root.addView(text("This device is linked to the parent account."))
+
+        val deviceId = findString(json, "deviceId").ifBlank {
+            prefs().getString(KEY_DEVICE_ID, "").orEmpty()
+        }
+
+        if (deviceId.isNotBlank()) {
+            root.addView(space(16))
+            root.addView(infoCard("Device", deviceId))
+        }
+
+        root.addView(space(24))
+        root.addView(
+            text(
+                "Supervised Device Owner setup is the next stage."
+            )
+        )
+
+        root.addView(space(20))
+
+        root.addView(secondaryButton("Change Mode") {
+            clearRoleOnly()
+            showRoleSelection()
+        })
+
+        setContentView(scroll(root))
+    }
+
+    private fun showLoading(message: String) {
+        pairingPolling = false
+
+        val root = base()
+        root.gravity = Gravity.CENTER_HORIZONTAL
+        root.addView(title("ISSUE"))
+        root.addView(space(30))
+        root.addView(ProgressBar(this))
+        root.addView(space(18))
+        root.addView(text(message))
+
+        setContentView(scroll(root))
+    }
+
+    private fun background(
+        action: () -> ApiClient.Response,
+        success: (ApiClient.Response) -> Unit,
+        failure: (Exception) -> Unit
+    ) {
+        Thread {
+            try {
+                val response = action()
+                runOnUiThread { success(response) }
+            } catch (e: Exception) {
+                runOnUiThread { failure(e) }
+            }
+        }.start()
+    }
+
+    private fun safeJson(body: String): JSONObject =
+        try {
+            JSONObject(body)
+        } catch (_: Exception) {
+            JSONObject()
+        }
+
+    private fun findString(
+        json: JSONObject?,
+        vararg keys: String
+    ): String {
+        if (json == null) return ""
+
+        for (key in keys) {
+            val value = json.optString(key, "")
+            if (value.isNotBlank() && value != "null") return value
+        }
+
+        for (section in arrayOf(
+            "data",
+            "result",
+            "session",
+            "pairing",
+            "child",
+            "device"
+        )) {
+            val nested = json.optJSONObject(section) ?: continue
+
+            for (key in keys) {
+                val value = nested.optString(key, "")
+                if (value.isNotBlank() && value != "null") return value
+            }
+        }
+
+        return ""
+    }
+
+    private fun findArray(
+        json: JSONObject?,
+        vararg keys: String
+    ): JSONArray? {
+        if (json == null) return null
+
+        for (key in keys) {
+            json.optJSONArray(key)?.let { return it }
+        }
+
+        val data = json.optJSONObject("data")
+
+        if (data != null) {
+            for (key in keys) {
+                data.optJSONArray(key)?.let { return it }
+            }
+        }
+
+        return null
+    }
+
+    private fun apiMessage(
+        body: String,
+        fallback: String
+    ): String =
+        findString(
+            safeJson(body),
+            "message",
+            "error",
+            "detail"
+        ).ifBlank { fallback }
+
+    private fun parentToken(): String =
+        prefs().getString(KEY_PARENT_TOKEN, "").orEmpty()
+
+    private fun clearParentSession() {
+        prefs().edit()
+            .remove(KEY_PARENT_TOKEN)
+            .apply()
+    }
+
+    private fun clearChildSession() {
+        pairingPolling = false
+
+        prefs().edit()
+            .remove(KEY_CHILD_ID)
+            .remove(KEY_DEVICE_ID)
+            .remove(KEY_PAIRING_ID)
+            .remove(KEY_PAIRING_CODE)
+            .remove(KEY_QR_TOKEN)
+            .apply()
+    }
+
+    private fun clearRoleOnly() {
+        pairingPolling = false
+        prefs().edit().remove(KEY_ROLE).apply()
+    }
+
+    private fun prefs() =
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+
+    private fun base() =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 70, 40, 70)
+            setBackgroundColor(Color.rgb(11, 11, 16))
+        }
+
+    private fun scroll(content: View) =
+        ScrollView(this).apply {
+            isFillViewport = true
+            addView(content)
+        }
+
+    private fun title(value: String) =
+        TextView(this).apply {
+            text = value
+            textSize = 34f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+
+    private fun modeTitle(value: String) =
+        TextView(this).apply {
+            text = value
+            textSize = 23f
+            setTextColor(Color.rgb(190, 160, 255))
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+
+    private fun text(value: String) =
+        TextView(this).apply {
+            text = value
+            textSize = 16f
+            setTextColor(Color.rgb(220, 220, 230))
+        }
+
+    private fun warningText(value: String) =
+        TextView(this).apply {
+            text = value
+            textSize = 15f
+            setTextColor(Color.rgb(255, 190, 120))
+        }
+
+    private fun successText(value: String) =
+        TextView(this).apply {
+            text = value
+            textSize = 18f
+            setTextColor(Color.rgb(100, 230, 150))
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+
+    private fun bigCode(value: String) =
+        TextView(this).apply {
+            text = value
+            textSize = 34f
+            letterSpacing = 0.18f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER_HORIZONTAL
+            setPadding(10, 18, 10, 18)
+            setBackgroundColor(Color.rgb(28, 24, 42))
+        }
+
+    private fun infoCard(
+        heading: String,
+        value: String
+    ) =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(24, 20, 24, 20)
+            setBackgroundColor(Color.rgb(23, 23, 31))
+
+            addView(
+                TextView(this@MainActivity).apply {
+                    text = heading
+                    textSize = 14f
+                    setTextColor(Color.rgb(185, 165, 255))
+                }
+            )
+
+            addView(
+                TextView(this@MainActivity).apply {
+                    text = value
+                    textSize = 18f
+                    setTextColor(Color.WHITE)
+                    setPadding(0, 8, 0, 0)
+                }
+            )
+        }
+
+    private fun field(
+        hintValue: String,
+        password: Boolean = false,
+        numeric: Boolean = false
+    ) =
+        EditText(this).apply {
+            hint = hintValue
+            setHintTextColor(Color.rgb(145, 145, 160))
+            setTextColor(Color.WHITE)
+            textSize = 16f
+            setPadding(20, 18, 20, 18)
+            setBackgroundColor(Color.rgb(23, 23, 31))
+
+            inputType = when {
+                password ->
+                    InputType.TYPE_CLASS_TEXT or
+                        InputType.TYPE_TEXT_VARIATION_PASSWORD
+
+                numeric ->
+                    InputType.TYPE_CLASS_NUMBER
+
+                else ->
+                    InputType.TYPE_CLASS_TEXT
+            }
+        }
+
+    private fun primaryButton(
+        label: String,
+        action: () -> Unit
+    ) =
+        Button(this).apply {
+            text = label
+            isAllCaps = false
+            textSize = 16f
+            setTextColor(Color.WHITE)
+            setBackgroundColor(Color.rgb(124, 77, 255))
+            setOnClickListener { action() }
+        }
+
+    private fun secondaryButton(
+        label: String,
+        action: () -> Unit
+    ) =
+        Button(this).apply {
+            text = label
+            isAllCaps = false
+            textSize = 15f
+            setTextColor(Color.rgb(220, 210, 255))
+            setBackgroundColor(Color.rgb(35, 31, 47))
+            setOnClickListener { action() }
+        }
+
+    private fun space(height: Int) =
+        View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(1, height)
+        }
+
+    private fun toast(message: String) {
+        Toast.makeText(
+            this,
+            message,
+            Toast.LENGTH_LONG
+        ).show()
+    }
+}

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Temporary colors. Final colors will be chosen later. -->
+    <color name="issue_background">#0B0B10</color>
+    <color name="issue_surface">#17171F</color>
+    <color name="issue_primary">#8B5CF6</color>
+    <color name="issue_secondary">#D946A8</color>
+    <color name="issue_text_primary">#FFFFFF</color>
+    <color name="issue_text_secondary">#B8B8C5</color>
+</resources>
