@@ -1169,22 +1169,61 @@ class MainActivity : Activity() {
         val root = base()
 
         root.addView(title("ISSUE"))
-        root.addView(space(30))
-        root.addView(
-            modeTitle("Setting Up Child Device")
-        )
-        root.addView(space(25))
-        root.addView(ProgressBar(this))
-        root.addView(space(20))
+        root.addView(space(18))
+        root.addView(modeTitle("Link Child Device"))
+        root.addView(space(14))
         root.addView(
             text(
-                "Registering this device automatically..."
+                "Parent: enter your approved Gmail and ISSUE password to link this device."
             )
+        )
+        root.addView(space(18))
+
+        val email = field("Approved Parent Gmail")
+        val password = field(
+            "ISSUE Password",
+            password = true
+        )
+
+        root.addView(email)
+        root.addView(space(12))
+        root.addView(password)
+        root.addView(space(20))
+
+        root.addView(
+            primaryButton("Link Child Device") {
+                val gmail =
+                    email.text.toString().trim()
+
+                val secret =
+                    password.text.toString()
+
+                if (
+                    gmail.isBlank() ||
+                    secret.isBlank()
+                ) {
+                    toast(
+                        "Enter parent Gmail and password"
+                    )
+                } else {
+                    autoEnrollChild(
+                        gmail,
+                        secret
+                    )
+                }
+            }
+        )
+
+        root.addView(space(12))
+
+        root.addView(
+            secondaryButton("Change Mode") {
+                clearRoleOnly()
+                showRoleSelection()
+            }
         )
 
         setContentView(scroll(root))
-
-        zeroEnrollChild()
     }
 
     private fun zeroEnrollChild() {
@@ -1502,9 +1541,26 @@ class MainActivity : Activity() {
                         "deviceId"
                     )
 
+                val deviceToken =
+                    findString(
+                        json,
+                        "deviceToken"
+                    )
+
+                val approved =
+                    findString(
+                        json,
+                        "status"
+                    ).equals(
+                        "APPROVED",
+                        ignoreCase = true
+                    )
+
                 if (
                     childId.isBlank() ||
-                    deviceId.isBlank()
+                    deviceId.isBlank() ||
+                    deviceToken.isBlank() ||
+                    !approved
                 ) {
                     toast(
                         "Setup succeeded but device information was missing"
@@ -1523,6 +1579,14 @@ class MainActivity : Activity() {
                     .putString(
                         KEY_DEVICE_ID,
                         deviceId
+                    )
+                    .putString(
+                        KEY_DEVICE_TOKEN,
+                        deviceToken
+                    )
+                    .putBoolean(
+                        KEY_CHILD_APPROVED,
+                        true
                     )
                     .remove(KEY_PAIRING_ID)
                     .remove(KEY_PAIRING_CODE)
